@@ -10,7 +10,7 @@ import PyPDF2
 
 COURSES = ["Mathematics", "Physics", "Chemistry", "Biology", "Computer Science"]
 GRADES = ["A", "B", "C", "D", "E", "F"]
-
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 def _create_signature_page(sig_b64: str) -> io.BytesIO:
     """
@@ -33,6 +33,7 @@ def _create_signature_page(sig_b64: str) -> io.BytesIO:
 
 
 def generate_degree_certificate(user: dict, output_dir: str = "output") -> str:
+    output_dir = os.path.join(BASE_DIR, "output")
     os.makedirs(output_dir, exist_ok=True)
     dt_issue = get_gmt_datetime().strftime("%Y-%m-%d %H:%M:%S GMT")
     watermark = f"Login Time: {user['login_time'].strftime('%Y-%m-%d %H:%M:%S GMT')}"
@@ -92,6 +93,7 @@ def generate_degree_certificate(user: dict, output_dir: str = "output") -> str:
 
 
 def generate_grade_report(user: dict, output_dir: str = "output") -> str:
+    output_dir = os.path.join(BASE_DIR, "output")
     os.makedirs(output_dir, exist_ok=True)
     dt_issue = get_gmt_datetime().strftime("%Y-%m-%d %H:%M:%S GMT")
     watermark = f"Login Time: {user['login_time'].strftime('%Y-%m-%d %H:%M:%S GMT')}"

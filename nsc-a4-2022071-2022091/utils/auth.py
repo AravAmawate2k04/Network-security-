@@ -1,67 +1,170 @@
-# File: auth.py
-import getpass
-import random
-import bcrypt
+# File: utils/auth.py
+
 from db import users_collection
-from ntp_time import get_gmt_datetime
 from email_utils import send_otp_email
+import random, datetime, bcrypt
+from bson.objectid import ObjectId
 
-OTP_EXPIRY_MINUTES = 5
+# how long OTPs stay valid
+OTP_TTL = datetime.timedelta(minutes=5)
 
-def signup():
-    print("=== Signup ===")
-    name = input("Full Name: ").strip()
-    roll_number = input("Roll Number: ").strip()
-    email = input("Email (Gmail): ").strip()
-    if not email.endswith("@iiitd.ac.in"):
-        print("Error: Email must be a IIITD address.")
-        return False
-    # Generate and send OTP
-    otp = str(random.randint(100000, 999999))
-    send_otp_email(email, otp)
-    user_otp = input("Enter the OTP sent to your email: ").strip()
-    if user_otp != otp:
-        print("Invalid OTP. Signup failed.")
-        return False
-    dob = input("Date of Birth (YYYY-MM-DD): ").strip()
-    pincode = input("Home Pincode: ").strip()
-    college = input("College Name: ").strip()
-    grad_year = input("Year of Graduation: ").strip()
-    password = getpass.getpass("Password: ")
-    password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
-    if users_collection.find_one({"roll_number": roll_number}):
-        print("User with this roll number already exists.")
-        return False
-    users_collection.insert_one({
-        "name": name,
-        "roll_number": roll_number,
-        "email": email,
-        "dob": dob,
-        "pincode": pincode,
-        "college": college,
-        "grad_year": grad_year,
-        "password_hash": password_hash
-    })
-    print("Signup successful.")
-    return True
 
-def login():
-    print("=== Login ===")
-    roll_number = input("Roll Number: ").strip()
-    password = getpass.getpass("Password: ")
-    user = users_collection.find_one({"roll_number": roll_number})
-    if not user or not bcrypt.checkpw(password.encode(), user["password_hash"]):
-        print("Invalid credentials.")
-        return None
-    # Two-factor via email
-    otp = str(random.randint(100000, 999999))
-    send_otp_email(user["email"], otp)
-    user_otp = input("Enter the OTP sent to your email: ").strip()
-    if user_otp != otp:
-        print("Invalid OTP. Login failed.")
-        return None
-    login_time = get_gmt_datetime()
-    print("Login successful.")
-    user["login_time"] = login_time
-    return user
+def signup_cli(data):
+    """
+    data: {
+      name, roll_number, dob, pincode,
+      email, college, grad_year, password[, otp]
+    }
+    returns {"status":"otp_sent"} or {"status":"ok"} or {"error": "..."}
+    """
+    try:
+        # 1) Validate required fields
+        required = [
+            "name","roll_number","dob",
+            "pincode","email","college",
+            "grad_year","password"
+        ]
+        for f in required:
+            if f not in data or not data[f]:
+                return {"error": f"Missing field {f}"}
 
+        # 2) Check if user exists already
+        existing = users_collection.find_one({"roll_number": data["roll_number"]})
+
+        # If fully verified already, cannot signup again
+        if existing and existing.get("verified"):
+            return {"error": "User already exists"}
+
+        # OTP flow
+        if "otp" in data:
+            if not existing:
+                return {"error": "No signup in progress for this roll number"}
+            # check OTP match & expiry
+            if existing.get("otp") != data["otp"]:
+                return {"error": "Invalid OTP"}
+            if existing.get("otp_expiry") < datetime.datetime.utcnow():
+                return {"error": "OTP expired"}
+            # mark verified and remove OTP fields
+            users_collection.update_one(
+                {"_id": existing["_id"]},
+                {
+                    "$set": {"verified": True},
+                    "$unset": {"otp": "", "otp_expiry": ""}
+                }
+            )
+            return {"status": "ok"}
+
+        # First step: generate OTP, hash password, store record
+        otp    = f"{random.randint(0,999999):06d}"
+        expiry = datetime.datetime.utcnow() + OTP_TTL
+
+        # hash the password
+        pwd_hash = bcrypt.hashpw(data["password"].encode(), bcrypt.gensalt()).decode()
+
+        if existing:
+            # update the signup record (in case they re‑submitted)
+            users_collection.update_one(
+                {"_id": existing["_id"]},
+                {"$set": {
+                    "name": data["name"],
+                    "dob": data["dob"],
+                    "pincode": data["pincode"],
+                    "email": data["email"],
+                    "college": data["college"],
+                    "grad_year": data["grad_year"],
+                    "password_hash": pwd_hash,
+                    "otp": otp,
+                    "otp_expiry": expiry
+                }}
+            )
+        else:
+            # new signup
+            users_collection.insert_one({
+                "name":         data["name"],
+                "roll_number":  data["roll_number"],
+                "dob":          data["dob"],
+                "pincode":      data["pincode"],
+                "email":        data["email"],
+                "college":      data["college"],
+                "grad_year":    data["grad_year"],
+                "password_hash":pwd_hash,
+                "verified":     False,
+                "otp":          otp,
+                "otp_expiry":   expiry
+            })
+
+        # send OTP email
+        send_otp_email(data["email"], otp)
+        return {"status": "otp_sent"}
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def login_cli(data):
+    """
+    data: { roll_number, password[, otp] }
+    returns {"status":"otp_sent"} or {"status":"ok","user":{…}} or {"error":"..."}
+    """
+    try:
+        # 1) Validate fields
+        if "roll_number" not in data or not data["roll_number"]:
+            return {"error": "Missing roll_number"}
+        if "password" not in data or not data["password"]:
+            return {"error": "Missing password"}
+
+        # 2) Lookup user (must be verified)
+        user = users_collection.find_one({
+            "roll_number": data["roll_number"],
+            "verified":    True
+        })
+        if not user:
+            return {"error": "Invalid roll number or user not verified"}
+
+        # 3) Verify password
+        if not bcrypt.checkpw(data["password"].encode(),
+                              user["password_hash"].encode()):
+            return {"error": "Invalid password"}
+
+        # OTP step?
+        if "otp" in data:
+            # verify OTP
+            if user.get("otp") != data["otp"]:
+                return {"error": "Invalid OTP"}
+            if user.get("otp_expiry") < datetime.datetime.utcnow():
+                return {"error": "OTP expired"}
+
+            # 4) Finalize login: stamp login_time, clear OTP
+            login_time = datetime.datetime.utcnow()
+            users_collection.update_one(
+                {"_id": user["_id"]},
+                {
+                    "$set": {"login_time": login_time},
+                    "$unset": {"otp": "", "otp_expiry": ""}
+                }
+            )
+
+            # return sanitized user + login_time
+            return {
+                "status": "ok",
+                "user": {
+                    "name":        user["name"],
+                    "roll_number": user["roll_number"],
+                    "college":     user["college"],
+                    "grad_year":   user["grad_year"],
+                    "login_time":  login_time.isoformat()  # JSON‑serializable
+                }
+            }
+
+        # First login step: generate + store OTP
+        otp    = f"{random.randint(0,999999):06d}"
+        expiry = datetime.datetime.utcnow() + OTP_TTL
+        users_collection.update_one(
+            {"_id": user["_id"]},
+            {"$set": {"otp": otp, "otp_expiry": expiry}}
+        )
+        send_otp_email(user["email"], otp)
+        return {"status": "otp_sent"}
+
+    except Exception as e:
+        return {"error": str(e)}
