@@ -1,4 +1,4 @@
-// backend/server.js
+
 const express       = require("express");
 const bodyParser    = require("body-parser");
 const { PythonShell } = require("python-shell");
@@ -15,7 +15,6 @@ const corsOptions = {
   };
   
   app.use(cors(corsOptions));
-  // this lets Express respond to all OPTIONS preflights with the proper headers
   app.options("*", cors(corsOptions));
   
   app.use(bodyParser.json());
@@ -60,7 +59,6 @@ app.post("/api/signup", async (req, res) => {
     });
 
     if (pyRes.error) return res.status(400).json(pyRes);
-    // expect {"status":"ok"} on success
     res.json(pyRes);
 
   } catch (err) {
@@ -81,16 +79,13 @@ app.post("/api/login", async (req, res) => {
       console.log("↪︎ login_cli returned:", pyRes);
   
       if (pyRes.error) {
-        // OTP or password error
         return res.status(400).json(pyRes);
       }
   
       if (pyRes.status === "otp_sent") {
-        // First step: just tell the client to prompt for OTP
         return res.json(pyRes);
       }
   
-      // pyRes.status === "ok" from step 2: we now have pyRes.user
       res.cookie("roll", pyRes.user.roll_number, { httpOnly: true });
       return res.json(pyRes);
   
@@ -98,7 +93,6 @@ app.post("/api/login", async (req, res) => {
       return res.status(400).json({ error: err.message });
     }
   });
-// ─── Download PDFs ────────────────────────────────────────
 app.get("/api/download/:type", async (req, res) => {
     try {
       const roll = req.cookies.roll;
@@ -106,7 +100,6 @@ app.get("/api/download/:type", async (req, res) => {
   
       console.log("↪︎ Download request:", { roll, type: req.params.type });
   
-      // Call Python to generate PDFs (degree_path & grade_path)
       const pyRes = await callPython({
         action: "generate",
         roll_number: roll
@@ -123,7 +116,7 @@ app.get("/api/download/:type", async (req, res) => {
       const filePath = path.isAbsolute(relPath) ? relPath : path.join(__dirname, "..", relPath);
       console.log("↪︎ Attempting to send file:", filePath);
   
-      // Check that the file exists
+      // Check that the file exist
       if (!fs.existsSync(filePath)) {
         console.error("✖ File not found:", filePath);
         return res.status(404).json({ error: "File not found" });
@@ -136,7 +129,6 @@ app.get("/api/download/:type", async (req, res) => {
       return res.status(500).json({ error: err.message });
     }
   });
-// ─── Start server ─────────────────────────────────────────
 app.listen(4000, () => {
   console.log("Backend running on http://localhost:4000");
 });
